@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 class BaanReader:
@@ -47,7 +47,7 @@ class BaanReader:
         #   quotations: "    3 |  00000004 | Description  |  value |"
         self.char_line_pattern = re.compile(r"^\s*\d+\s*\|")
 
-    def read(self, file_path: str | Path) -> Dict[str, Any]:
+    def read(self, file_path: str | Path) -> dict[str, Any]:
         """
         Reads a Baan TXT file and returns a structured dictionary.
 
@@ -79,11 +79,11 @@ class BaanReader:
               }
             }
         """
-        data: Dict[str, Any] = {"header": {}, "positions": {}}
+        data: dict[str, Any] = {"header": {}, "positions": {}}
 
         current_position_id: str | None = None
-        current_configurator: Dict | None = None
-        current_characteristics: Dict | None = None
+        current_configurator: dict | None = None
+        current_characteristics: dict | None = None
         in_char_section = False  # True once numeric characteristic lines start
 
         path = Path(file_path)
@@ -121,7 +121,7 @@ class BaanReader:
                     item_id = sub_header_match.group(1).strip()
                     sub_header_name = sub_header_match.group(2).strip()
 
-                    entry: Dict[str, Any] = {
+                    entry: dict[str, Any] = {
                         "id": item_id,
                         "vyr_obj": None,
                         "characteristics": {},
