@@ -31,7 +31,7 @@ from baan_txt_reader import BaanReader
 reader = BaanReader()
 
 # Read a Baan TXT file
-data = reader.read("TMP022812498.TXT")
+data = reader.read("\\\\TOCZ-FS2\\510-TOCZ\\300 Departments\\300 Technical Services\\Dokumentace B\\NACTENO\\TMP022812498.TXT")
 
 # 1. Get global order info
 print(f"Customer: {data['header'].get('Odběratel')}")
