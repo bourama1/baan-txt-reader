@@ -33,10 +33,6 @@ class BaanReader:
     """
 
     def __init__(self):
-        # Allow optional whitespace around the 8-digit ID:
-        #   orders:     |06280001|
-        #   quotations: |  00000004 |
-        self.id_pattern = re.compile(r"\|\s*(\d{8})\s*\|")
         self.pozice_pattern = re.compile(r"^Pozice\s*\|\s*(\d+)")
         # Match both order format "ID    Kont | …" and quotation format "ID | …"
         self.sub_header_pattern = re.compile(
@@ -133,14 +129,20 @@ class BaanReader:
                     continue
 
                 # ── 3. Characteristic line ───────────────────────────────────
-                # Format:  index | 8-digit-ID | description | value | …
+                # Format:  index | ID | description | value | …
+                #
+                # The ID field is normally an 8-digit BaaN code (e.g.
+                # "06280001"), but some door variants (e.g. GT-R) use short
+                # alphanumeric codes instead, right-padded with spaces to the
+                # same 8-character field width, e.g. "    SLPP", "    ApUp".
+                # Rather than requiring 8 digits, we take the ID directly
+                # from the second pipe-delimited field so both forms work.
                 if self.char_line_pattern.match(sanitized_line):
-                    id_match = self.id_pattern.search(sanitized_line)
-                    if id_match and current_characteristics is not None:
+                    parts = sanitized_line.split("|")
+                    if len(parts) >= 4 and current_characteristics is not None:
                         in_char_section = True
-                        char_id = id_match.group(1)
-                        parts = sanitized_line.split("|")
-                        if len(parts) >= 4:
+                        char_id = parts[1].strip()
+                        if char_id:
                             value = parts[3].strip().replace("*", "")
                             current_characteristics[char_id] = value
                     continue

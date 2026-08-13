@@ -7,7 +7,7 @@ A standalone Python library for parsing Baan-generated industrial door configura
 - **Global Header Extraction**: Captures order metadata (Customer, Order Number, etc.).
 - **Hierarchical Grouping**: Organizes data by `Pozice` (Position).
 - **Sub-Configuration Support**: Distinctly parses items within a position (e.g., Doorleaf, Rails, Hardware).
-- **ID-Based Mapping**: Maps all 8-digit characteristic IDs to their values.
+- **ID-Based Mapping**: Maps all characteristic IDs to their values. Handles both the standard 8-digit BaaN codes (e.g. `06280001`) and the short alphanumeric codes used by some door variants such as GT-R (e.g. `SLPP`, `ApUp`).
 - **Robust Encoding**: Automatically handles `windows-1250` encoding used by Baan.
 
 ## Installation
@@ -31,7 +31,9 @@ from baan_txt_reader import BaanReader
 reader = BaanReader()
 
 # Read a Baan TXT file
-data = reader.read("\\\\TOCZ-FS2\\510-TOCZ\\300 Departments\\300 Technical Services\\Dokumentace B\\NACTENO\\TMP022812498.TXT")
+data = reader.read(
+    "\\\\TOCZ-FS2\\510-TOCZ\\300 Departments\\300 Technical Services\\Dokumentace B\\NACTENO\\TMP022812498.TXT"
+)
 
 # 1. Get global order info
 print(f"Customer: {data['header'].get('Odběratel')}")
