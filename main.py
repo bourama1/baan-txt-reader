@@ -71,3 +71,5 @@ for name, cfg in data.get("positions", {}).get("30", {}).items():
     chars = cfg.get("characteristics", {})
     for char_id, value in list(chars.items())[:10]:
         print(f"      {char_id} : {value}")
+    print(f"    BOM     : {cfg.get('bom')}")
+    print(f"    BOM vaha     : {cfg.get('bom_total_weight')}")

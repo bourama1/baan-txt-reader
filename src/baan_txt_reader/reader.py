@@ -26,7 +26,13 @@ class BaanReader:
                          'id'       Kont / ID identifier
                          'vyr_obj'  Výr.obj. (production/quotation order number,
                                     may be empty for quotations)
-                       plus 'characteristics' (the numbered attribute lines).
+                       plus 'characteristics' (the numbered attribute lines)
+                       and 'bom' / 'bom_total_weight' (the material rows that
+                       follow a configurator's characteristics, and their
+                       "Celkem Hmotnost" total, e.g.:
+                         " T09-010-29-0022|  31,8500|m1 |Hmotnost  | 587,537  528502"
+                         "Celkem  Hmotnost  |    993,857"
+                       ).
     * in_char_section flag — set to True when numeric characteristic lines
       begin; prevents T09 BOM rows and "Celkem" totals from leaking into
       the global header.  Reset to False on every Pozice / ID boundary.
@@ -42,6 +48,21 @@ class BaanReader:
         #   orders:     " 10|06280001|Description|value|"
         #   quotations: "    3 |  00000004 | Description  |  value |"
         self.char_line_pattern = re.compile(r"^\s*\d+\s*\|")
+
+        # BOM (bill of materials) lines follow a configurator's characteristics.
+        # Unlike characteristic lines, they start with a material code instead
+        # of a numeric index, e.g.:
+        #   " T09-010-29-0022|      31,8500|m1 |Hmotnost  |    587,537     528502"
+        #   "    FV_254211_10|       1,0000|pcs|Hmotnost  |      0,000     528502"
+        # Fields: <code> | <qty> | <unit> | "Hmotnost" | <weight>  <variant>
+        self.bom_line_pattern = re.compile(
+            r"^\s*(?P<code>\S+)\s*\|\s*(?P<qty>[\d.,]+)\s*\|\s*(?P<unit>\S*)\s*\|"
+            r"\s*Hmotnost\s*\|\s*(?P<weight>[\d.,]+)\s+(?P<variant>\S+)\s*$"
+        )
+        # Closes out a configurator's BOM section, e.g. "Celkem  Hmotnost  |    993,857"
+        self.bom_total_pattern = re.compile(
+            r"^Celkem\s+Hmotnost\s*\|\s*(?P<total>[\d.,]+)\s*$"
+        )
 
     def read(self, file_path: str | Path) -> dict[str, Any]:
         """
@@ -63,7 +84,13 @@ class BaanReader:
                       "Lanko (Indy)": {
                           "id": "4*6950*04",
                           "vyr_obj": "217765",
-                          "characteristics": {"06280001": "6950", …}
+                          "characteristics": {"06280001": "6950", …},
+                          "bom": [
+                              {"code": "T09-010-29-0022", "qty": "31,8500",
+                               "unit": "m1", "weight": "587,537", "variant": "528502"},
+                              …
+                          ],
+                          "bom_total_weight": "993,857"
                       },
                       "Doorleaf (Indy)": {
                           "id": "010-510632",
@@ -121,6 +148,8 @@ class BaanReader:
                         "id": item_id,
                         "vyr_obj": None,
                         "characteristics": {},
+                        "bom": [],
+                        "bom_total_weight": None,
                     }
                     data["positions"][current_position_id][sub_header_name] = entry
                     current_configurator = entry
@@ -145,6 +174,33 @@ class BaanReader:
                         if char_id:
                             value = parts[3].strip().replace("*", "")
                             current_characteristics[char_id] = value
+                    continue
+
+                # ── 3b. BOM (bill of materials) line ─────────────────────────
+                # Comes after a configurator's characteristics, one row per
+                # consumed material. Keep in_char_section True so the header
+                # guard below doesn't misfile these into data["header"].
+                bom_match = self.bom_line_pattern.match(sanitized_line)
+                if bom_match and current_configurator is not None:
+                    in_char_section = True
+                    current_configurator["bom"].append(
+                        {
+                            "code": bom_match.group("code"),
+                            "qty": bom_match.group("qty"),
+                            "unit": bom_match.group("unit"),
+                            "weight": bom_match.group("weight"),
+                            "variant": bom_match.group("variant"),
+                        }
+                    )
+                    continue
+
+                # ── 3c. BOM total  ("Celkem  Hmotnost | <total>") ────────────
+                # Marks the end of the current configurator's BOM section.
+                total_match = self.bom_total_pattern.match(sanitized_line)
+                if total_match and current_configurator is not None:
+                    current_configurator["bom_total_weight"] = total_match.group(
+                        "total"
+                    )
                     continue
 
                 # ── 4. Header-style field  (key | value …) ──────────────────
