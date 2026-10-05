@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 
 class BaanReader:
@@ -64,12 +64,13 @@ class BaanReader:
             r"^Celkem\s+Hmotnost\s*\|\s*(?P<total>[\d.,]+)\s*$"
         )
 
-    def read(self, file_path: str | Path) -> dict[str, Any]:
+    def read(self, source: "str | Path | bytes | IO") -> dict[str, Any]:
         """
         Reads a Baan TXT file and returns a structured dictionary.
 
         Args:
-            file_path: Path to the .txt file.
+            source: Path to the .txt file, raw ``bytes`` (windows-1250), or an
+                open binary/text stream.
 
         Returns:
             {
@@ -79,12 +80,16 @@ class BaanReader:
                   "Datum obj.": "28.05.2026",
                   …                              # all shared order fields
               },
+              "position_headers": {"10": {…}},  # header fields per position
+                                                # (global "header" is first-wins)
               "positions": {
                   "10": {
                       "Lanko (Indy)": {
                           "id": "4*6950*04",
                           "vyr_obj": "217765",
                           "characteristics": {"06280001": "6950", …},
+                          "texts": {"06280001": "S-500 Tescedo", …},  # 5th column, non-empty only
+                          "all_values": {"06000390": ["1", "2"]},  # codes seen more than once
                           "bom": [
                               {"code": "T09-010-29-0022", "qty": "31,8500",
                                "unit": "m1", "weight": "587,537", "variant": "528502"},
@@ -102,131 +107,156 @@ class BaanReader:
               }
             }
         """
-        data: dict[str, Any] = {"header": {}, "positions": {}}
+        data: dict[str, Any] = {
+            "header": {},
+            "position_headers": {},
+            "positions": {},
+        }
 
         current_position_id: str | None = None
         current_configurator: dict | None = None
         current_characteristics: dict | None = None
         in_char_section = False  # True once numeric characteristic lines start
 
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+        if isinstance(source, (str, Path)):
+            path = Path(source)
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {source}")
+            raw = path.read_bytes()
+        else:
+            raw = source if isinstance(source, bytes) else source.read()
+        text = raw if isinstance(raw, str) else raw.decode("windows-1250", errors="replace")
 
-        with open(path, "r", encoding="windows-1250", errors="replace") as f:
-            for line in f:
-                sanitized_line = line.strip()
-                # Quotation files occasionally wrap lines in double quotes when
-                # a value field contains semicolons, e.g.:
-                #   "  557 |  09003015 | Ridici jednotka  |  936-010 | NG 601; XF"
-                if sanitized_line.startswith('"') and sanitized_line.endswith('"'):
-                    sanitized_line = sanitized_line[1:-1].strip()
-                if not sanitized_line:
-                    continue
+        for line in text.splitlines():
+            sanitized_line = line.strip()
+            # Quotation files occasionally wrap lines in double quotes when
+            # a value field contains semicolons, e.g.:
+            #   "  557 |  09003015 | Ridici jednotka  |  936-010 | NG 601; XF"
+            if sanitized_line.startswith('"') and sanitized_line.endswith('"'):
+                sanitized_line = sanitized_line[1:-1].strip()
+            if not sanitized_line:
+                continue
 
-                # ── 1. Pozice ────────────────────────────────────────────────
-                # Position boundary.  Reset characteristic-section flag so
-                # header fields that follow (before ID Kont) are processed.
-                pozice_match = self.pozice_pattern.match(sanitized_line)
-                if pozice_match:
-                    current_position_id = pozice_match.group(1).strip()
-                    if current_position_id not in data["positions"]:
-                        data["positions"][current_position_id] = {}
-                    current_configurator = None
-                    current_characteristics = None
-                    in_char_section = False
-                    continue
+            # ── 1. Pozice ────────────────────────────────────────────────
+            # Position boundary.  Reset characteristic-section flag so
+            # header fields that follow (before ID Kont) are processed.
+            pozice_match = self.pozice_pattern.match(sanitized_line)
+            if pozice_match:
+                current_position_id = pozice_match.group(1).strip()
+                if current_position_id not in data["positions"]:
+                    data["positions"][current_position_id] = {}
+                    data["position_headers"][current_position_id] = {}
+                current_configurator = None
+                current_characteristics = None
+                in_char_section = False
+                continue
 
-                # ── 2. ID Kont ───────────────────────────────────────────────
-                # Configurator identifier — unique per sub-item in the order.
-                sub_header_match = self.sub_header_pattern.match(sanitized_line)
-                if sub_header_match and current_position_id is not None:
-                    item_id = sub_header_match.group(1).strip()
-                    sub_header_name = sub_header_match.group(2).strip()
+            # ── 2. ID Kont ───────────────────────────────────────────────
+            # Configurator identifier — unique per sub-item in the order.
+            sub_header_match = self.sub_header_pattern.match(sanitized_line)
+            if sub_header_match and current_position_id is not None:
+                item_id = sub_header_match.group(1).strip()
+                sub_header_name = sub_header_match.group(2).strip()
 
-                    entry: dict[str, Any] = {
-                        "id": item_id,
-                        "vyr_obj": None,
-                        "characteristics": {},
-                        "bom": [],
-                        "bom_total_weight": None,
-                    }
-                    data["positions"][current_position_id][sub_header_name] = entry
-                    current_configurator = entry
-                    current_characteristics = entry["characteristics"]
-                    in_char_section = False
-                    continue
+                entry: dict[str, Any] = {
+                    "id": item_id,
+                    "vyr_obj": None,
+                    "characteristics": {},
+                    "texts": {},
+                    "all_values": {},
+                    "bom": [],
+                    "bom_total_weight": None,
+                }
+                data["positions"][current_position_id][sub_header_name] = entry
+                current_configurator = entry
+                current_characteristics = entry["characteristics"]
+                in_char_section = False
+                continue
 
-                # ── 3. Characteristic line ───────────────────────────────────
-                # Format:  index | ID | description | value | …
-                #
-                # The ID field is normally an 8-digit BaaN code (e.g.
-                # "06280001"), but some door variants (e.g. GT-R) use short
-                # alphanumeric codes instead, right-padded with spaces to the
-                # same 8-character field width, e.g. "    SLPP", "    ApUp".
-                # Rather than requiring 8 digits, we take the ID directly
-                # from the second pipe-delimited field so both forms work.
-                if self.char_line_pattern.match(sanitized_line):
-                    parts = sanitized_line.split("|")
-                    if len(parts) >= 4 and current_characteristics is not None:
-                        in_char_section = True
-                        char_id = parts[1].strip()
-                        if char_id:
-                            value = parts[3].strip().replace("*", "")
-                            current_characteristics[char_id] = value
-                    continue
-
-                # ── 3b. BOM (bill of materials) line ─────────────────────────
-                # Comes after a configurator's characteristics, one row per
-                # consumed material. Keep in_char_section True so the header
-                # guard below doesn't misfile these into data["header"].
-                bom_match = self.bom_line_pattern.match(sanitized_line)
-                if bom_match and current_configurator is not None:
-                    in_char_section = True
-                    current_configurator["bom"].append(
-                        {
-                            "code": bom_match.group("code"),
-                            "qty": bom_match.group("qty"),
-                            "unit": bom_match.group("unit"),
-                            "weight": bom_match.group("weight"),
-                            "variant": bom_match.group("variant"),
-                        }
-                    )
-                    continue
-
-                # ── 3c. BOM total  ("Celkem  Hmotnost | <total>") ────────────
-                # Marks the end of the current configurator's BOM section.
-                total_match = self.bom_total_pattern.match(sanitized_line)
-                if total_match and current_configurator is not None:
-                    current_configurator["bom_total_weight"] = total_match.group(
-                        "total"
-                    )
-                    continue
-
-                # ── 4. Header-style field  (key | value …) ──────────────────
-                # Guard: once characteristics have started (in_char_section),
-                # remaining pipe-delimited lines are T09 BOM rows or "Celkem"
-                # totals — skip them all.  The header fields for the *next*
-                # configurator block appear before its Pozice line, which will
-                # flip in_char_section back to False.
-                if in_char_section or "|" not in sanitized_line:
-                    continue
-
+            # ── 3. Characteristic line ───────────────────────────────────
+            # Format:  index | ID | description | value | …
+            #
+            # The ID field is normally an 8-digit BaaN code (e.g.
+            # "06280001"), but some door variants (e.g. GT-R) use short
+            # alphanumeric codes instead, right-padded with spaces to the
+            # same 8-character field width, e.g. "    SLPP", "    ApUp".
+            # Rather than requiring 8 digits, we take the ID directly
+            # from the second pipe-delimited field so both forms work.
+            if self.char_line_pattern.match(sanitized_line):
                 parts = sanitized_line.split("|")
-                key = parts[0].strip()
-                if not key or len(parts) < 2:
-                    continue
+                if len(parts) >= 4 and current_characteristics is not None:
+                    in_char_section = True
+                    char_id = parts[1].strip()
+                    if char_id:
+                        value = parts[3].strip().replace("*", "")
+                        if char_id in current_characteristics:
+                            all_values = current_configurator["all_values"]
+                            all_values.setdefault(
+                                char_id, [current_characteristics[char_id]]
+                            ).append(value)
+                        current_characteristics[char_id] = value
+                        if len(parts) > 4:
+                            text = parts[4].strip().replace("*", "").strip()
+                            if text:
+                                current_configurator["texts"][char_id] = text
+                continue
 
-                raw_value = parts[1].strip()
+            # ── 3b. BOM (bill of materials) line ─────────────────────────
+            # Comes after a configurator's characteristics, one row per
+            # consumed material. Keep in_char_section True so the header
+            # guard below doesn't misfile these into data["header"].
+            bom_match = self.bom_line_pattern.match(sanitized_line)
+            if bom_match and current_configurator is not None:
+                in_char_section = True
+                current_configurator["bom"].append(
+                    {
+                        "code": bom_match.group("code"),
+                        "qty": bom_match.group("qty"),
+                        "unit": bom_match.group("unit"),
+                        "weight": bom_match.group("weight"),
+                        "variant": bom_match.group("variant"),
+                    }
+                )
+                continue
 
-                # Výr.obj. is the one field that differs between configurators
-                if key == "Výr.obj." and current_configurator is not None:
-                    current_configurator["vyr_obj"] = raw_value
-                    continue
+            # ── 3c. BOM total  ("Celkem  Hmotnost | <total>") ────────────
+            # Marks the end of the current configurator's BOM section.
+            total_match = self.bom_total_pattern.match(sanitized_line)
+            if total_match and current_configurator is not None:
+                current_configurator["bom_total_weight"] = total_match.group(
+                    "total"
+                )
+                continue
 
-                # Every other field is shared order-level data.
-                # First-occurrence-wins: identical repetitions are no-ops.
-                if raw_value and key not in data["header"]:
-                    data["header"][key] = raw_value.replace("*", "")
+            # ── 4. Header-style field  (key | value …) ──────────────────
+            # Guard: once characteristics have started (in_char_section),
+            # remaining pipe-delimited lines are T09 BOM rows or "Celkem"
+            # totals — skip them all.  The header fields for the *next*
+            # configurator block appear before its Pozice line, which will
+            # flip in_char_section back to False.
+            if in_char_section or "|" not in sanitized_line:
+                continue
+
+            parts = sanitized_line.split("|")
+            key = parts[0].strip()
+            if not key or len(parts) < 2:
+                continue
+
+            raw_value = parts[1].strip()
+
+            # Výr.obj. is the one field that differs between configurators
+            if key == "Výr.obj." and current_configurator is not None:
+                current_configurator["vyr_obj"] = raw_value
+                continue
+
+            # Every other field is shared order-level data.
+            # First-occurrence-wins: identical repetitions are no-ops.
+            if raw_value:
+                value = raw_value.replace("*", "")
+                data["header"].setdefault(key, value)
+                if current_position_id is not None:
+                    data["position_headers"][current_position_id].setdefault(
+                        key, value
+                    )
 
         return data
