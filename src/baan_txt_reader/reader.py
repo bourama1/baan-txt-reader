@@ -60,6 +60,7 @@ class BaanReader:
             r"\s*Hmotnost\s*\|\s*(?P<weight>[\d.,]+)\s+(?P<variant>\S+)\s*$"
         )
         # Closes out a configurator's BOM section, e.g. "Celkem  Hmotnost  |    993,857"
+        self.position_date_keys = ("Datum výroby", "Datum dodání")
         self.bom_total_pattern = re.compile(
             r"^Celkem\s+Hmotnost\s*\|\s*(?P<total>[\d.,]+)\s*$"
         )
@@ -117,6 +118,9 @@ class BaanReader:
         current_configurator: dict | None = None
         current_characteristics: dict | None = None
         in_char_section = False  # True once numeric characteristic lines start
+        # Dates are printed *before* the Pozice line they belong to, i.e. while
+        # the previous block's characteristics/BOM are still being skipped.
+        pending_dates: dict[str, str] = {}
 
         if isinstance(source, (str, Path)):
             path = Path(source)
@@ -146,6 +150,8 @@ class BaanReader:
                 if current_position_id not in data["positions"]:
                     data["positions"][current_position_id] = {}
                     data["position_headers"][current_position_id] = {}
+                data["position_headers"][current_position_id].update(pending_dates)
+                pending_dates = {}
                 current_configurator = None
                 current_characteristics = None
                 in_char_section = False
@@ -227,6 +233,11 @@ class BaanReader:
                     "total"
                 )
                 continue
+
+            # ── 3d. Per-position dates (precede their Pozice line) ───────
+            key, _, rest = sanitized_line.partition("|")
+            if key.strip() in self.position_date_keys and rest.strip():
+                pending_dates[key.strip()] = rest.strip()
 
             # ── 4. Header-style field  (key | value …) ──────────────────
             # Guard: once characteristics have started (in_char_section),
