@@ -88,6 +88,8 @@ class BaanReader:
                       "Lanko (Indy)": {
                           "id": "4*6950*04",
                           "vyr_obj": "217765",
+                          "header_lines": ["Odběratel |001553|…", …],  # raw block header
+                          "lines": [(10, "06280001", "Description", "6950", "text"), …],  # file order
                           "characteristics": {"06280001": "6950", …},
                           "texts": {"06280001": "S-500 Tescedo", …},  # 5th column, non-empty only
                           "all_values": {"06000390": ["1", "2"]},  # codes seen more than once
@@ -121,6 +123,10 @@ class BaanReader:
         # Dates are printed *before* the Pozice line they belong to, i.e. while
         # the previous block's characteristics/BOM are still being skipped.
         pending_dates: dict[str, str] = {}
+        # Raw lines of the current block header: from "Odběratel" up to the
+        # first characteristic line. Shared by reference with the entry.
+        header_lines: list[str] = []
+        collecting = False
 
         if isinstance(source, (str, Path)):
             path = Path(source)
@@ -140,6 +146,15 @@ class BaanReader:
                 sanitized_line = sanitized_line[1:-1].strip()
             if not sanitized_line:
                 continue
+
+            # ── 0. Raw block header lines ────────────────────────────────
+            if sanitized_line.partition("|")[0].strip() == "Odběratel":
+                header_lines = []
+                collecting = True
+            elif collecting and self.char_line_pattern.match(sanitized_line):
+                collecting = False
+            if collecting and sanitized_line.strip("| "):
+                header_lines.append(sanitized_line)
 
             # ── 1. Pozice ────────────────────────────────────────────────
             # Position boundary.  Reset characteristic-section flag so
@@ -167,7 +182,9 @@ class BaanReader:
                 entry: dict[str, Any] = {
                     "id": item_id,
                     "vyr_obj": None,
+                    "header_lines": header_lines,
                     "characteristics": {},
+                    "lines": [],
                     "texts": {},
                     "all_values": {},
                     "bom": [],
@@ -201,10 +218,22 @@ class BaanReader:
                                 char_id, [current_characteristics[char_id]]
                             ).append(value)
                         current_characteristics[char_id] = value
-                        if len(parts) > 4:
-                            text = parts[4].strip().replace("*", "").strip()
-                            if text:
-                                current_configurator["texts"][char_id] = text
+                        text = (
+                            parts[4].strip().replace("*", "").strip()
+                            if len(parts) > 4
+                            else ""
+                        )
+                        current_configurator["lines"].append(
+                            (
+                                int(parts[0]),
+                                char_id,
+                                parts[2].strip(),
+                                value,
+                                text,
+                            )
+                        )
+                        if text:
+                            current_configurator["texts"][char_id] = text
                 continue
 
             # ── 3b. BOM (bill of materials) line ─────────────────────────
